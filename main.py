@@ -1,5 +1,6 @@
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
+import numpy as np
 
 def load_pdf_text(file_path):
     reader = PdfReader(file_path) #reader is an object representing the pdf, which we can work with
@@ -45,25 +46,47 @@ def add_embeddings(chunks):
     
     return chunks
 
+def embed_query(query):
+    return model.encode(query) #Associates a vector embedding to the query asked by user
+
+def cosine_similarity(vec1, vec2):
+    vec1 = np.array(vec1)
+    vec2 = np.array(vec2)
+    return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2)) #simple dot product finding cos(theta)
+
+def retrieve_top_chunks(query, chunks, top_k=3):
+    query_embedding = embed_query(query)
+    scored_chunks = []
+
+    for chunk in chunks:
+        score = cosine_similarity(query_embedding, chunk["embedding"])
+        scored_chunks.append((score, chunk))
+
+    scored_chunks.sort(key=lambda x: x[0], reverse=True) #new syntax: lambda x: x[0] means take input x and return its first element
+
+    return scored_chunks[:top_k] #returns top 3 most similar chunks
+
 pdf_path = "Transformerv3paper.pdf"
 pages = load_pdf_text(pdf_path)
 chunks = chunk_pages(pages, 1000)
 model = SentenceTransformer("all-MiniLM-L6-v2")
+embedded_chunks = add_embeddings(chunks)
+query = "What does the paper say about transformer architechture?"
 
-#current testing
-print("\n--- BEFORE EMBEDDINGS ---\n")
-print(f"Number of chunks: {len(chunks)}")
-print(f"First chunk page: {chunks[0]['page_number']}")
-print(f"First chunk text sample:\n{chunks[0]['text'][:300]}")
+top_chunks = retrieve_top_chunks(query, embedded_chunks, top_k=3)
 
-chunks = add_embeddings(chunks)
+for i, (score,chunk) in enumerate(top_chunks, start=1):  #so indexing doesnt start from 0
+    print(f"\nResult {i}")
+    print(f"Score: {score}")
+    print(f"Page number: {chunk['page_number']}")
+    print(f"Text: {chunk['text'][:1000]}") #first 500 char of text in chunk
 
-print("\n--- AFTER EMBEDDINGS ---\n")
-print(f"Embedding length: {len(chunks[0]['embedding'])}") #finds number of dimensions/length of embedding list for 1st chunk
-print(f"First 10 values:\n{chunks[0]['embedding'][:10]}") #displays first 10 dimensions for first chunk
-print(f"Keys in first chunk:\n{chunks[0].keys()}") #Displays what keys there are in chunks using .keys()
+#current testing 
 
-#testing part 1 (importing pdf splitting into chunks and displaying text)
+
+
+#TESTING PART 1 (importing pdf splitting into chunks and displaying text)
+
 #print("\nSECOND PAGE NUMBER\n")
 #print(chunks[1]["page_number"])
 #print("\nSECOND PAGE TEXT\n")
@@ -75,4 +98,18 @@ print(f"Keys in first chunk:\n{chunks[0].keys()}") #Displays what keys there are
 #print(f"Pages with extracted text: {len(set(chunk["page_number"] for chunk in chunks))}") #extracts page number from each chunk, set finds list of unique ones, then find length
 #print("\nTOTAL CHUNKS EXTRACTED\n")
 #print(f"Number of chunks of text: {len(chunks)}")
+
+#TESTING PART 2 (embedding testing)
+
+#print("\n--- BEFORE EMBEDDINGS ---\n")
+#print(f"Number of chunks: {len(chunks)}")
+#print(f"First chunk page: {chunks[0]['page_number']}")
+#print(f"First chunk text sample:\n{chunks[0]['text'][:300]}")
+
+#chunks = add_embeddings(chunks)
+
+#print("\n--- AFTER EMBEDDINGS ---\n")
+#print(f"Embedding length: {len(chunks[0]['embedding'])}") #finds number of dimensions/length of embedding list for 1st chunk
+#print(f"First 10 values:\n{chunks[0]['embedding'][:10]}") #displays first 10 dimensions for first chunk
+#print(f"Keys in first chunk:\n{chunks[0].keys()}") #Displays what keys there are in chunks using .keys()
 
