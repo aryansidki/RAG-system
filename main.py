@@ -1,6 +1,7 @@
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 import numpy as np
+import re
 
 def load_pdf_text(file_path):
     reader = PdfReader(file_path) #reader is an object representing the pdf, which we can work with
@@ -66,8 +67,41 @@ def retrieve_top_chunks(query, chunks, top_k=3):
 
     return scored_chunks[:top_k] #returns top 3 most similar chunks
 
+def find_references_start(text):
+    lines = text.splitlines() #splits into separate lines
+
+    for i, line in enumerate(lines):
+        cleaned = line.strip() #removes whitespace from start and end of string, cleaned holds the current stripped line
+
+        if re.fullmatch(r"(References|REFERENCES|Bibliography|BIBLIOGRAPHY)", cleaned): #checks if cleaned matches any of the options listed
+            return i #returns line index
+    
+    return None
+
+def remove_references_section(pages): #motivated by the fact we dont want top chunks to be a list of references
+    cleaned_pages = []
+
+    for page in pages:
+        text = page["text"]
+        start_idx = find_references_start(text)
+
+        if start_idx is None:
+            cleaned_pages.append(page)
+        else:
+            lines = text.splitlines()
+            kept_text = "\n".join(lines[:start_idx])
+
+            if kept_text.strip():
+                cleaned_pages.append({"page_number": page["page_number"], "text": kept_text})
+                break
+
+    return cleaned_pages
+
+
+
 pdf_path = "Transformerv3paper.pdf"
 pages = load_pdf_text(pdf_path)
+#pages = remove_references_section(pages)
 chunks = chunk_pages(pages, 1000)
 model = SentenceTransformer("all-MiniLM-L6-v2")
 embedded_chunks = add_embeddings(chunks)
