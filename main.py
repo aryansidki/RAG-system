@@ -2,6 +2,21 @@ from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 import numpy as np
 import re
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
+
+load_dotenv() #loads variables from .env into the environment
+
+api_key = os.getenv("GEMINI_API_KEY") #checks f there is a variable by this name, and asks for its value
+if not api_key:
+    raise ValueError("GEMINI_API_KEY was not found. Check your .env file.")
+client = OpenAI(
+    api_key=api_key,
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/" #allows the client to talk to gemini server
+)
+
+#========================functions====================================================================
 
 def load_pdf_text(file_path):
     reader = PdfReader(file_path) #reader is an object representing the pdf, which we can work with
@@ -83,21 +98,67 @@ def remove_references_section(pages): #motivated by the fact we dont want top ch
 
     for page in pages:
         text = page["text"]
-        start_idx = find_references_start(text)
+        start_idx = find_references_start(text) #tries to find the index of references header
 
-        if start_idx is None:
-            cleaned_pages.append(page)
-        else:
-            lines = text.splitlines()
-            kept_text = "\n".join(lines[:start_idx])
+        if start_idx is None: #if it doesnt find the references header
+            cleaned_pages.append(page) #append page
+        else: #if it does
+            lines = text.splitlines() #split text up into lines
+            kept_text = "\n".join(lines[:start_idx]) #and keep the text up to the line with the header
 
-            if kept_text.strip():
-                cleaned_pages.append({"page_number": page["page_number"], "text": kept_text})
-                break
+            if kept_text.strip(): #strip all whitespace from start and end of kept_text, if this isn't empty, ie there is some text, this is true
+                cleaned_pages.append({"page_number": page["page_number"], "text": kept_text}) #if there is text we append the kept_text of the page
+                break #end since all the rest is references
 
     return cleaned_pages
 
+def build_context(top_chunks):
+    context = ""
 
+    for i, (score, chunk) in enumerate(top_chunks, start=1):
+        context += f"chunk {i} (Page {chunk['page_number']}):\n"
+        context += chunk["text"] +"\n\n"
+
+    return context
+
+def build_prompt(query, chunks, top_k=3):
+    top_chunks = retrieve_top_chunks(query, chunks, top_k=top_k)
+    context = build_context(top_chunks)
+
+    prompt = f"""Use the following context to answer the question.
+If the answer isn't contained within the context, state this clearly.
+
+Context:
+{context}
+
+Question:
+{query}
+"""
+    return prompt
+
+def ask_llm(prompt):
+    response = client.chat.completions.create(
+        model="gemini-2.5-flash",
+        messages=[
+            {
+                "role": "system", # this part is like a model rule sheet
+                "content": "Answer only from the supplied context. If the answer isn't in the context, state this clearly."
+            },
+            {
+                "role": "user", # what we want it to answer (given the rules)
+                "content": prompt
+            }
+        ],
+        temperature = 0.2 #temperature controls randomness. keeping it low for more focused answers
+    )
+
+    return response.choices[0].message.content
+
+def answer_query(query, embedded_chunks, top_k=3):
+    prompt = build_prompt(query, embedded_chunks, top_k=top_k)
+    answer = ask_llm(prompt)
+    
+    return answer
 
 pdf_path = "Transformerv3paper.pdf"
 pages = load_pdf_text(pdf_path)
@@ -105,20 +166,14 @@ pages = load_pdf_text(pdf_path)
 chunks = chunk_pages(pages, 1000)
 model = SentenceTransformer("all-MiniLM-L6-v2")
 embedded_chunks = add_embeddings(chunks)
+
+#=======================current testing============================================================== 
 query = "What does the paper say about transformer architechture?"
+answer = answer_query(query, embedded_chunks, top_k=3)
+print(query)
+print(answer)
 
-top_chunks = retrieve_top_chunks(query, embedded_chunks, top_k=3)
-
-for i, (score,chunk) in enumerate(top_chunks, start=1):  #so indexing doesnt start from 0
-    print(f"\nResult {i}")
-    print(f"Score: {score}")
-    print(f"Page number: {chunk['page_number']}")
-    print(f"Text: {chunk['text'][:1000]}") #first 500 char of text in chunk
-
-#current testing 
-
-
-
+#========================previous testing=============================================================
 #TESTING PART 1 (importing pdf splitting into chunks and displaying text)
 
 #print("\nSECOND PAGE NUMBER\n")
@@ -147,3 +202,12 @@ for i, (score,chunk) in enumerate(top_chunks, start=1):  #so indexing doesnt sta
 #print(f"First 10 values:\n{chunks[0]['embedding'][:10]}") #displays first 10 dimensions for first chunk
 #print(f"Keys in first chunk:\n{chunks[0].keys()}") #Displays what keys there are in chunks using .keys()
 
+#==================testing top chunk selection=============================================================================
+
+#top_chunks = retrieve_top_chunks(query, embedded_chunks, top_k=3)
+
+#for i, (score,chunk) in enumerate(top_chunks, start=1):  #so indexing doesnt start from 0
+#    print(f"\nResult {i}")
+#    print(f"Score: {score}")
+#    print(f"Page number: {chunk['page_number']}")
+#    print(f"Text: {chunk['text'][:1000]}") #first 500 char of text in chunk
