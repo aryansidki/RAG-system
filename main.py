@@ -7,8 +7,8 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 load_dotenv() #loads variables from .env into the environment
-
-api_key = os.getenv("GEMINI_API_KEY") #checks f there is a variable by this name, and asks for its value
+model = SentenceTransformer("all-MiniLM-L6-v2") #loads pretrained embedding model as model
+api_key = os.getenv("GEMINI_API_KEY") #checks if there is a variable by this name, and asks for its value
 if not api_key:
     raise ValueError("GEMINI_API_KEY was not found. Check your .env file.")
 client = OpenAI(
@@ -34,25 +34,34 @@ def load_pdf_text(file_path):
     
     return pages_data
 
-def chunk_pages(pages_data, chunk_size = 1000):
+def chunk_pages(pages_data, chunk_size = 1000, overlap = 150):
+    if overlap >= chunk_size:
+        raise ValueError("Overlap must be less than chunk size")
+    
     chunks = []
     chunk_id = 1
+    step = chunk_size - overlap
 
     for page in pages_data:
         page_number = page["page_number"]
         text = page["text"]
 
-        for start in range(0, len(text), chunk_size): #goes over all text in each page in 1000 char steps
+        for start in range(0, len(text), step): #goes over all text in each page in 1000 char steps
             chunk_text = text[start:(start + chunk_size)]
+
+            if not chunk_text.strip(): #chunk_text.strip() is true if not empty, so this line is true if chunk_text is whitespace
+                continue #exits the loop for this iteration
 
             chunks.append({"page_number": page_number, "chunk_id": chunk_id, "text": chunk_text}) #maintains dictionary structure
 
             chunk_id += 1 #ensures unique id number
 
+            if start + chunk_size >= len(text): #this is the end index used, so if this is true, we've reached the end of the text
+                break #to avoid repeating the last chunk
+
     return chunks
 
 def add_embeddings(chunks):
-    model = SentenceTransformer("all-MiniLM-L6-v2") #pretrained embedding model as model
 
     texts = [chunk["text"] for chunk in chunks] #texts are the text attribute of each chunk in chunks 
     embeddings = model.encode(texts) #model.encode() takes input chunks and converts to vectors
@@ -124,7 +133,8 @@ def build_context(top_chunks):
 def build_prompt(query, chunks, top_k=3):
     top_chunks = retrieve_top_chunks(query, chunks, top_k=top_k)
     context = build_context(top_chunks)
-
+    print(f"Top chunks page numbers: {top_chunks[0]['page_number']}, {top_chunks[1]['page_number']}, {top_chunks[2]['page_number']}")
+    print(f"top chunks scores: {top_chunks[0][0]}, {top_chunks[1][0]}, {top_chunks[2][0]}")
     prompt = f"""Use the following context to answer the question.
 If the answer isn't contained within the context, state this clearly.
 
@@ -160,15 +170,15 @@ def answer_query(query, embedded_chunks, top_k=3):
     
     return answer
 
-pdf_path = "Transformerv3paper.pdf"
+pdf_path = "19201418_5056_CW1.pdf"
 pages = load_pdf_text(pdf_path)
 #pages = remove_references_section(pages)
 chunks = chunk_pages(pages, 1000)
-model = SentenceTransformer("all-MiniLM-L6-v2")
+
 embedded_chunks = add_embeddings(chunks)
 
 #=======================current testing============================================================== 
-query = "What does the paper say about transformer architechture?"
+query = "What are the practical limitations of a H-bridge DC motor controller?"
 answer = answer_query(query, embedded_chunks, top_k=3)
 print(query)
 print(answer)
@@ -207,7 +217,8 @@ print(answer)
 #top_chunks = retrieve_top_chunks(query, embedded_chunks, top_k=3)
 
 #for i, (score,chunk) in enumerate(top_chunks, start=1):  #so indexing doesnt start from 0
-#    print(f"\nResult {i}")
-#    print(f"Score: {score}")
-#    print(f"Page number: {chunk['page_number']}")
+#    print(f"\nResult {i}") #rank of result in terms of similarity to query
+#    print(f"Score: {score}") #top chunks is a tuple of (score, chunk), we print score here
+#    print(f"Page number: {chunk['page_number']}") #these 3 print out keys from the dictionary for each chunk
+#    print(f"Chunk ID: {chunk['chunk_id']}")
 #    print(f"Text: {chunk['text'][:1000]}") #first 500 char of text in chunk
