@@ -5,6 +5,7 @@ import re
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
+import faiss
 
 load_dotenv() #loads variables from .env into the environment
 model = SentenceTransformer("all-MiniLM-L6-v2") #loads pretrained embedding model as model
@@ -79,7 +80,18 @@ def cosine_similarity(vec1, vec2):
     vec2 = np.array(vec2)
     return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2)) #simple dot product finding cos(theta)
 
-def retrieve_top_chunks(query, chunks, top_k=3):
+def build_faiss_index(embedded_chunks):
+    embeddings = np.array(
+        [chunk["embedding"] for chunk in embedded_chunks], #goes through each chunk, gets embedding and puts it in a numpy array
+        dtype = "float32") #each row is an embedding, each column is a dimension (component of the vector), so for N chunks, embeddings.shape = (N, 384)
+    faiss.normalize_L2(embeddings) # Each vector has euclidean norm of 1, so cosine similarity is the same as dot product
+    dimension = embeddings.shape[1] #should be 384
+
+    index = faiss.IndexFlatIP(dimension) #empty faiss index, expecting vectors of dimension 384, when searched, compare using inner product (dot product)
+    index.add(embeddings)
+    return index
+
+def retrieve_top_chunks_old(query, chunks, top_k=3):
     query_embedding = embed_query(query)
     scored_chunks = []
 
@@ -90,6 +102,23 @@ def retrieve_top_chunks(query, chunks, top_k=3):
     scored_chunks.sort(key=lambda x: x[0], reverse=True) #new syntax: lambda x: x[0] means take input x and return its first element
 
     return scored_chunks[:top_k] #returns top 3 most similar chunks
+
+def retrieve_top_chunks(query, embedded_chunks, index, top_k=3):
+    query_embedding = model.encode([query], convert_to_numpy=True).astype("float32") #converts query to 2d numpy array, axis 0 is the query, axis 1 is the embedding. It expects a batch of queries which are stores along axis 0
+    #converts to float32 to match the type of the embeddings    
+    faiss.normalize_L2(query_embedding) #euclidean norm
+
+    scores, indices = index.search(query_embedding, top_k) #returns the top k most similar chunks stored in index to the query embedding
+    #scores.shape = indices.shape = (1,3), so scores[0] returns the 3 similarity scores for the top 3, and indices[0] returns the positions of the best 3 chunks for the query
+
+    top_chunks = [] #empty list to store the top chunks dictionaries
+
+    for rank, (score, idx) in enumerate(zip(scores[0], indices[0]), start=1): #pairs up the similarity scores and indices for the top chunks relative to the query
+        #enumerate also assigns them a 'rank', so the tuple (score, idx) stores the score and index for the top chunks
+        chunk = embedded_chunks[idx] #picks out the chunks based on their index in the original list
+        top_chunks.append((float(score), chunk)) #appends the chunks to top_chunks, in a tuple with their score
+    
+    return top_chunks #returns (score, chunk), where chunk is the dictionary including embeddings
 
 def find_references_start(text):
     lines = text.splitlines() #splits into separate lines
@@ -130,10 +159,10 @@ def build_context(top_chunks):
 
     return context
 
-def build_prompt(query, chunks, top_k=3):
-    top_chunks = retrieve_top_chunks(query, chunks, top_k=top_k)
+def build_prompt(query, embedded_chunks, index, top_k=3):
+    top_chunks = retrieve_top_chunks(query, embedded_chunks, index, top_k=top_k)
     context = build_context(top_chunks)
-    print(f"Top chunks page numbers: {top_chunks[0]['page_number']}, {top_chunks[1]['page_number']}, {top_chunks[2]['page_number']}")
+    print(f"Top chunks page numbers: {top_chunks[0][1]['page_number']}, {top_chunks[1][1]['page_number']}, {top_chunks[2][1]['page_number']}")
     print(f"top chunks scores: {top_chunks[0][0]}, {top_chunks[1][0]}, {top_chunks[2][0]}")
     prompt = f"""Use the following context to answer the question.
 If the answer isn't contained within the context, state this clearly.
@@ -164,8 +193,8 @@ def ask_llm(prompt):
 
     return response.choices[0].message.content
 
-def answer_query(query, embedded_chunks, top_k=3):
-    prompt = build_prompt(query, embedded_chunks, top_k=top_k)
+def answer_query(query, embedded_chunks, index, top_k=3):
+    prompt = build_prompt(query, embedded_chunks, index, top_k=top_k)
     answer = ask_llm(prompt)
     
     return answer
@@ -176,10 +205,11 @@ pages = load_pdf_text(pdf_path)
 chunks = chunk_pages(pages, 1000)
 
 embedded_chunks = add_embeddings(chunks)
+index = build_faiss_index(embedded_chunks)
 
 #=======================current testing============================================================== 
 query = "What are the practical limitations of a H-bridge DC motor controller?"
-answer = answer_query(query, embedded_chunks, top_k=3)
+answer = answer_query(query, embedded_chunks, index, top_k=3)
 print(query)
 print(answer)
 
