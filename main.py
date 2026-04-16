@@ -6,6 +6,7 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 import faiss
+import json
 
 load_dotenv() #loads variables from .env into the environment
 model = SentenceTransformer("all-MiniLM-L6-v2") #loads pretrained embedding model as model
@@ -35,7 +36,7 @@ def load_pdf_text(file_path):
     
     return pages_data
 
-def chunk_pages(pages_data, chunk_size = 1000, overlap = 150):
+def chunk_pages(pages_data, file_path, chunk_size = 1000, overlap = 150):
     if overlap >= chunk_size:
         raise ValueError("Overlap must be less than chunk size")
     
@@ -53,7 +54,7 @@ def chunk_pages(pages_data, chunk_size = 1000, overlap = 150):
             if not chunk_text.strip(): #chunk_text.strip() is true if not empty, so this line is true if chunk_text is whitespace
                 continue #exits the loop for this iteration
 
-            chunks.append({"page_number": page_number, "chunk_id": chunk_id, "text": chunk_text}) #maintains dictionary structure
+            chunks.append({"page_number": page_number, "chunk_id": chunk_id, "text": chunk_text, "source": file_path}) #maintains dictionary structure
 
             chunk_id += 1 #ensures unique id number
 
@@ -90,6 +91,19 @@ def build_faiss_index(embedded_chunks):
     index = faiss.IndexFlatIP(dimension) #empty faiss index, expecting vectors of dimension 384, when searched, compare using inner product (dot product)
     index.add(embeddings)
     return index
+
+def save_pipeline(embedded_chunks, index, chunks_path="embedded_chunks.json", index_path="faiss_index.bin"):
+    with open(chunks_path, "w") as f: #opens file at this path in write mode. 'with' handles closing the file automatically when done.
+        json.dump(embedded_chunks, f) #takes python list of dictionaries, writing as json text into the file
+    faiss.write_index(index, index_path) #built in faiss save function. give it index object and file path it does the rest
+    print("Pipeline saved.")
+
+def load_pipeline(chunks_path="embedded_chunks.json", index_path="faiss_index.bin"):
+    with open(chunks_path, "r") as f:
+        embedded_chunks = json.load(f) #read json text with chunk dictionaries
+    index = faiss.read_index(index_path) #read index object from binary file
+    print("Pipeline loaded from disk.")
+    return embedded_chunks, index #returns both read objects
 
 def retrieve_top_chunks_old(query, chunks, top_k=3):
     query_embedding = embed_query(query)
@@ -159,12 +173,9 @@ def build_context(top_chunks):
 
     return context
 
-def build_prompt(query, embedded_chunks, index, top_k=3):
-    top_chunks = retrieve_top_chunks(query, embedded_chunks, index, top_k=top_k)
-    context = build_context(top_chunks)
-    print(f"Top chunks page numbers: {top_chunks[0][1]['page_number']}, {top_chunks[1][1]['page_number']}, {top_chunks[2][1]['page_number']}")
-    print(f"top chunks scores: {top_chunks[0][0]}, {top_chunks[1][0]}, {top_chunks[2][0]}")
+def build_prompt(query, context):
     prompt = f"""Use the following context to answer the question.
+Cite the page numbers you draw from in your answer (e.g. Based on page 3...)
 If the answer isn't contained within the context, state this clearly.
 
 Context:
@@ -194,24 +205,42 @@ def ask_llm(prompt):
     return response.choices[0].message.content
 
 def answer_query(query, embedded_chunks, index, top_k=3):
-    prompt = build_prompt(query, embedded_chunks, index, top_k=top_k)
+    top_chunks = retrieve_top_chunks(query, embedded_chunks, index, top_k=top_k)
+    context = build_context(top_chunks)
+    prompt = build_prompt(query, context)
     answer = ask_llm(prompt)
+
+    sources = [{"page_number": chunk["page_number"], 
+        "chunk_id": chunk["chunk_id"], "score": round(score, 4)} #builds a new dictionary joining the score onto chunk info
+        for score, chunk in top_chunks]
     
-    return answer
+    return answer, sources
 
 pdf_path = "19201418_5056_CW1.pdf"
-pages = load_pdf_text(pdf_path)
-#pages = remove_references_section(pages)
-chunks = chunk_pages(pages, 1000)
 
-embedded_chunks = add_embeddings(chunks)
-index = build_faiss_index(embedded_chunks)
+if os.path.exists("embedded_chunks.json") and os.path.exists("faiss_index.bin"):
+    embedded_chunks, index = load_pipeline()
+    if embedded_chunks[0]["source"] != pdf_path:
+        print("Different PDF defected, recomputing...")
+        pages = load_pdf_text(pdf_path)
+        #pages = remove_references_section(pages)
+        chunks = chunk_pages(pages, pdf_path)
+        embedded_chunks = add_embeddings(chunks)
+        index = build_faiss_index(embedded_chunks)
+        save_pipeline(embedded_chunks, index)
+else:
+    pages = load_pdf_text(pdf_path)
+    chunks = chunk_pages(pages, pdf_path)
+    embedded_chunks = add_embeddings(chunks)
+    index = build_faiss_index(embedded_chunks)
+    save_pipeline(embedded_chunks, index)
 
 #=======================current testing============================================================== 
 query = "What are the practical limitations of a H-bridge DC motor controller?"
-answer = answer_query(query, embedded_chunks, index, top_k=3)
+answer, sources = answer_query(query, embedded_chunks, index, top_k=3)
 print(query)
 print(answer)
+print("Sources: ", sources)
 
 #========================previous testing=============================================================
 #TESTING PART 1 (importing pdf splitting into chunks and displaying text)

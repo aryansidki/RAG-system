@@ -3,3 +3,7 @@ __pycache__/
 .env
 *.env
 .env.*
+faiss_index.bin
+RAG logbook.docx
+RAG_logbook.docx
+embedded_chunks.json
