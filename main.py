@@ -222,19 +222,33 @@ def answer_query(query, vectorstore, top_k=3):
 
 pdf_path = "economics_study.pdf"
 
-if os.path.exists("faiss_index"):
-    embeddings_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    vectorstore = FAISS.load_local("faiss_index", embeddings_model, allow_dangerous_deserialization=True) 
-    print("Pipeline loaded from disk")
-    
+if os.path.exists("faiss_index") and os.path.exists("faiss_index/source.txt"):
+    with open("faiss_index/source.txt", "r") as f:
+        saved_source = f.read() #reads the source.txt file containing the pdf name
+    if saved_source != pdf_path:
+        print("Different PDF detected, recomputing...")
+        rebuild = True
+    else:
+        rebuild = False
 else:
+    rebuild = True
+    
+if rebuild:
     loader = PyPDFLoader(pdf_path)
     pages = loader.load()
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
     chunks = splitter.split_documents(pages)
     embeddings_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     vectorstore = FAISS.from_documents(chunks, embeddings_model) #both embeds each chunk and builds FAISS index simultaneously
-    vectorstore.save_local("faiss_index") #replaces save_pipeline, since vectorstore saves both files info anyway.
+    vectorstore.save_local("faiss_index") #replaces save_pipeline, since vectorstore saves both
+    with open("faiss_index/source.txt", "w") as f: #source.txt contains the pdf source
+        f.write(pdf_path) #overwrites with the new one if they don't match
+    print("Pipeline saved.")
+    
+else:
+    embeddings_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    vectorstore = FAISS.load_local("faiss_index", embeddings_model, allow_dangerous_deserialization=True) 
+    print("Pipeline loaded from disk.")
 
 
 #=======================current testing============================================================== 
