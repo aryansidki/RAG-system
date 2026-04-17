@@ -7,6 +7,10 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import faiss
 import json
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
 
 load_dotenv() #loads variables from .env into the environment
 model = SentenceTransformer("all-MiniLM-L6-v2") #loads pretrained embedding model as model
@@ -20,7 +24,7 @@ client = OpenAI(
 
 #========================functions====================================================================
 
-def load_pdf_text(file_path):
+def load_pdf_text(file_path): 
     reader = PdfReader(file_path) #reader is an object representing the pdf, which we can work with
     pages_data = []
 
@@ -167,9 +171,9 @@ def remove_references_section(pages): #motivated by the fact we dont want top ch
 def build_context(top_chunks):
     context = ""
 
-    for i, (score, chunk) in enumerate(top_chunks, start=1):
-        context += f"chunk {i} (Page {chunk['page_number']}):\n"
-        context += chunk["text"] +"\n\n"
+    for i, (chunk, score) in enumerate(top_chunks, start=1):
+        context += f"chunk {i} (Page {chunk.metadata['page']}):\n"
+        context += chunk.page_content +"\n\n"
 
     return context
 
@@ -204,40 +208,38 @@ def ask_llm(prompt):
 
     return response.choices[0].message.content
 
-def answer_query(query, embedded_chunks, index, top_k=3):
-    top_chunks = retrieve_top_chunks(query, embedded_chunks, index, top_k=top_k)
+def answer_query(query, vectorstore, top_k=3):
+    top_chunks = vectorstore.similarity_search_with_score(query, k=top_k)
     context = build_context(top_chunks)
     prompt = build_prompt(query, context)
     answer = ask_llm(prompt)
 
-    sources = [{"page_number": chunk["page_number"], 
-        "chunk_id": chunk["chunk_id"], "score": round(score, 4)} #builds a new dictionary joining the score onto chunk info
-        for score, chunk in top_chunks]
+    sources = [{"page_number": chunk.metadata["page"], 
+        "source": chunk.metadata["source"], "score": round(float(score), 4)} #builds a new dictionary containing page number, source (save path) and score
+        for chunk, score in top_chunks]
     
     return answer, sources
 
-pdf_path = "19201418_5056_CW1.pdf"
+pdf_path = "economics_study.pdf"
 
-if os.path.exists("embedded_chunks.json") and os.path.exists("faiss_index.bin"):
-    embedded_chunks, index = load_pipeline()
-    if embedded_chunks[0]["source"] != pdf_path:
-        print("Different PDF defected, recomputing...")
-        pages = load_pdf_text(pdf_path)
-        #pages = remove_references_section(pages)
-        chunks = chunk_pages(pages, pdf_path)
-        embedded_chunks = add_embeddings(chunks)
-        index = build_faiss_index(embedded_chunks)
-        save_pipeline(embedded_chunks, index)
+if os.path.exists("faiss_index"):
+    embeddings_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    vectorstore = FAISS.load_local("faiss_index", embeddings_model, allow_dangerous_deserialization=True) 
+    print("Pipeline loaded from disk")
+    
 else:
-    pages = load_pdf_text(pdf_path)
-    chunks = chunk_pages(pages, pdf_path)
-    embedded_chunks = add_embeddings(chunks)
-    index = build_faiss_index(embedded_chunks)
-    save_pipeline(embedded_chunks, index)
+    loader = PyPDFLoader(pdf_path)
+    pages = loader.load()
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    chunks = splitter.split_documents(pages)
+    embeddings_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    vectorstore = FAISS.from_documents(chunks, embeddings_model) #both embeds each chunk and builds FAISS index simultaneously
+    vectorstore.save_local("faiss_index") #replaces save_pipeline, since vectorstore saves both files info anyway.
+
 
 #=======================current testing============================================================== 
-query = "What are the practical limitations of a H-bridge DC motor controller?"
-answer, sources = answer_query(query, embedded_chunks, index, top_k=3)
+query = "Is DHL the superior logistics firm?"
+answer, sources = answer_query(query, vectorstore, top_k=3)
 print(query)
 print(answer)
 print("Sources: ", sources)
