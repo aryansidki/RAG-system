@@ -11,9 +11,11 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
+from fastapi import FastAPI
+from pydantic import BaseModel
 
 load_dotenv() #loads variables from .env into the environment
-model = SentenceTransformer("all-MiniLM-L6-v2") #loads pretrained embedding model as model
+#model = SentenceTransformer("all-MiniLM-L6-v2") #loads pretrained embedding model as model
 api_key = os.getenv("GEMINI_API_KEY") #checks if there is a variable by this name, and asks for its value
 if not api_key:
     raise ValueError("GEMINI_API_KEY was not found. Check your .env file.")
@@ -172,7 +174,7 @@ def build_context(top_chunks):
     context = ""
 
     for i, (chunk, score) in enumerate(top_chunks, start=1):
-        context += f"chunk {i} (Page {chunk.metadata['page']}):\n"
+        context += f"chunk {i} (Page {chunk.metadata['page'] + 1}):\n"
         context += chunk.page_content +"\n\n"
 
     return context
@@ -214,13 +216,15 @@ def answer_query(query, vectorstore, top_k=3):
     prompt = build_prompt(query, context)
     answer = ask_llm(prompt)
 
-    sources = [{"page_number": chunk.metadata["page"], 
+    sources = [{"page_number": chunk.metadata["page"] + 1, 
         "source": chunk.metadata["source"], "score": round(float(score), 4)} #builds a new dictionary containing page number, source (save path) and score
         for chunk, score in top_chunks]
     
     return answer, sources
 
-pdf_path = "economics_study.pdf"
+pdf_path = "mphys_11074220_sem2-1.pdf"
+
+            
 
 if os.path.exists("faiss_index") and os.path.exists("faiss_index/source.txt"):
     with open("faiss_index/source.txt", "r") as f:
@@ -250,13 +254,26 @@ else:
     vectorstore = FAISS.load_local("faiss_index", embeddings_model, allow_dangerous_deserialization=True) 
     print("Pipeline loaded from disk.")
 
+app = FastAPI()
 
-#=======================current testing============================================================== 
-query = "Is DHL the superior logistics firm?"
-answer, sources = answer_query(query, vectorstore, top_k=3)
-print(query)
-print(answer)
-print("Sources: ", sources)
+class Query(BaseModel):
+    question: str
+    top_k: int = 3
+
+@app.post("/ask")
+def ask(q: Query): #takes query object from post request, and passes it to answer_query
+    answer, sources = answer_query(q.question, vectorstore, top_k=q.top_k)
+    return {"answer": answer, "sources": sources} #returns answer and sources as a dictionary
+
+@app.get("/health")
+def health():
+    return {"status": "ok"} #returns a dictionary with a status key and value ok
+#=======================current testing PRE EC2============================================================== 
+#query = "What does this paper say about limitations of reconstruction?"
+#answer, sources = answer_query(query, vectorstore, top_k=3)
+#print(query)
+#print(answer)
+#print("Sources: ", sources)
 
 #========================previous testing=============================================================
 #TESTING PART 1 (importing pdf splitting into chunks and displaying text)
